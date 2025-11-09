@@ -173,7 +173,7 @@ docker-compose up voxcpm-cpu
 服务启动后，API 将在以下地址可用：
 - 主服务: http://localhost:8100
 - 健康检查: http://localhost:8100/health
-- API 文档: http://localhost:8100/docs
+- **📚 交互式API文档**: http://localhost:8100/docs (Swagger UI界面，可在线测试所有接口)
 
 #### 手动启动
 
@@ -190,6 +190,9 @@ export PYTHONPATH=./src
 
 # 启动服务
 python -m uvicorn src.server.app:app --host 0.0.0.0 --port 8000
+
+# 服务启动后访问
+# 📚 交互式API文档: http://localhost:8000/docs
 ```
 
 **CPU 版本:**
@@ -209,61 +212,252 @@ python -m uvicorn src.server.app:app --host 0.0.0.0 --port 8000
 
 ## API 使用
 
-### 文本转语音接口
+### 可用端点
 
-**端点:** `POST /v1/audio/speech`
+**📚 API文档**: 部署Docker服务后，访问 `http://<HOST>:<PORT>/docs` 即可查看所有接口的交互式文档（Swagger UI）！
 
-**请求格式:**
+**健康检查:**
+- `GET /health` - 检查服务状态和模型加载情况
+
+**参考音频管理:**
+- `POST /ref_feat` - 上传参考音频并编码存储特征到数据库
+
+**文本转语音:**
+- `POST /tts` - TTS语音生成（POST方式，支持文件上传）
+- `GET /tts` - TTS语音生成（GET方式，仅URL参数）
+
+### 接口详细说明
+
+#### 1. 健康检查 (GET /health)
+```bash
+curl http://localhost:8100/health
+```
+**响应示例:**
 ```json
 {
-  "model": "voxcpm-onnx",
-  "input": "你好，这是一个测试文本。",
-  "voice": "default",
-  "response_format": "mp3",
-  "speed": 1.0
+  "status": "ok",
+  "initialized": true,
+  "models_dir": "/root/code/VoxCPM/onnx_models",
+  "device_type": "cuda",
+  "device_id": 0
 }
 ```
 
-**响应:** 返回音频文件流 (16kHz WAV 格式)
+#### 2. 上传参考音频 (POST /ref_feat)
 
-### 使用 curl 测试
+**功能说明**: 上传参考音频文件，系统会提取音频特征并持久化存储到 SQLite 数据库中。上传后的参考音频可以通过 `feat_id` 在后续的 TTS 请求中重复使用。
 
+**使用场景**: 
+- 创建个性化的语音克隆
+- 保存特定说话人的声音特征
+- 避免重复上传相同的参考音频
+
+**请求参数**:
+- `feat_id` (必填): 参考音频的唯一标识符，后续通过此 ID 引用该音频
+- `prompt_audio` (必填): 参考音频文件 (支持 WAV、MP3 等格式)
+- `prompt_text` (可选): 参考音频对应的文本内容，有助于提高合成质量
+
+**使用示例**:
 ```bash
-curl -X POST "http://localhost:8100/v1/audio/speech" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "voxcpm-onnx",
-    "input": "你好，世界！",
-    "voice": "default"
-  }' \
-  --output output.wav
+curl -X POST http://localhost:8100/ref_feat \
+  -F "feat_id=my_voice" \
+  -F "prompt_audio=@reference.wav" \
+  -F "prompt_text=这是参考文本内容，可以帮助模型更好地理解声音特征"
+```
+
+**响应示例:**
+```json
+{
+  "feat_id": "my_voice",
+  "patches_shape": [1, 100, 64]
+}
+```
+
+**持久化存储**: 上传的参考音频特征会永久保存在 SQLite 数据库中（路径由 `VOX_SQLITE_PATH` 环境变量配置），服务重启后仍然可用。
+
+#### 3. 文本转语音 - POST方式
+
+**voice 参数作用说明**: 
+- `"default"`: 使用系统默认的参考音频进行语音合成
+- 自定义 `feat_id`: 使用通过 `/ref_feat` 上传的参考音频进行语音克隆
+- 留空或不传: 不使用参考音频，仅基于文本进行基础合成
+
+**使用场景**:
+- **默认声音**: 快速测试或基础语音合成
+- **自定义声音**: 个性化语音克隆，复现已上传的说话人声音
+- **声音切换**: 在同一服务中使用多个不同的说话人声音
+
+**请求示例**:
+```bash
+# 使用默认声音
+curl -X POST http://localhost:8100/tts \
+  -F "input=你好，这是一个测试文本。" \
+  -F "voice=default" \
+  -F "response_format=mp3"
+
+# 使用自定义参考声音（需要先通过 /ref_feat 上传）
+curl -X POST http://localhost:8100/tts \
+  -F "input=使用自定义声音合成这段文本。" \
+  -F "voice=my_custom_voice" \
+  -F "response_format=mp3"
+
+# 完整参数示例
+curl -X POST http://localhost:8100/tts \
+  -F "input=你好，这是一个测试文本。" \
+  -F "voice=my_voice" \
+  -F "response_format=mp3" \
+  -F "speed=1.0" \
+  -F "min_len=2" \
+  -F "max_len=2000" \
+  -F "cfg_value=2.0" \
+  --output output.mp3
+```
+
+#### 4. 文本转语音 - GET方式
+
+**voice 参数说明**: 与 POST 方式相同，支持 `"default"`、自定义 `feat_id` 或留空。
+
+**使用示例**:
+```bash
+# 使用默认声音
+curl "http://localhost:8100/tts?input=你好，世界！&voice=default&response_format=mp3" \
+  --output output.mp3
+
+# 使用自定义参考声音
+curl "http://localhost:8100/tts?input=使用自定义声音合成这段文本。&voice=my_custom_voice&response_format=wav" \
+  --output custom_output.wav
+
+# 不使用参考音频（基础合成）
+curl "http://localhost:8100/tts?input=基础语音合成测试&response_format=mp3" \
+  --output basic_output.mp3
+```
+
+### 参数说明
+
+**通用参数:**
+- `input` (必填): 要转换的文本内容
+- `voice`: 参考音频ID，支持 "default" 或自定义ID
+- `response_format`: 输出格式 (mp3, wav, opus, aac, flac, pcm)，默认 mp3
+- `speed`: 语速 (占位符，暂不支持变速)
+- `prompt_text`: 参考音频对应的文本内容
+- `min_len`: 最小音频长度，默认 2
+- `max_len`: 最大音频长度，默认 2000
+- `cfg_value`: CFG系数，默认 2.0
+
+### 完整工作流程示例
+
+#### 步骤 1: 上传参考音频（一次性操作）
+```python
+import requests
+
+# 上传参考音频文件
+with open("my_reference_audio.wav", "rb") as f:
+    files = {"prompt_audio": f}
+    data = {
+        "feat_id": "speaker_john",  # 自定义标识符
+        "prompt_text": "这是参考音频的文本内容"
+    }
+    response = requests.post("http://localhost:8100/ref_feat", files=files, data=data)
+
+if response.status_code == 200:
+    print(f"参考音频上传成功: {response.json()}")
+    # 输出: {'feat_id': 'speaker_john', 'patches_shape': [1, 100, 64]}
+else:
+    print(f"上传失败: {response.text}")
+```
+
+#### 步骤 2: 使用上传的参考音频进行语音合成
+```python
+import requests
+
+# 使用已上传的参考音频进行语音合成
+response = requests.post(
+    "http://localhost:8100/tts",
+    data={
+        "input": "使用约翰的声音合成这段文本。",
+        "voice": "speaker_john",  # 使用步骤1中上传的参考音频ID
+        "response_format": "mp3",
+        "cfg_value": 2.0
+    }
+)
+
+if response.status_code == 200:
+    with open("john_voice_output.mp3", "wb") as f:
+        f.write(response.content)
+    print("语音合成成功，文件已保存为 john_voice_output.mp3")
+else:
+    print(f"合成失败: {response.text}")
+```
+
+#### 步骤 3: 验证参考音频是否可用
+```python
+import requests
+
+# 检查服务状态和已上传的参考音频
+response = requests.get("http://localhost:8100/health")
+health_info = response.json()
+
+if health_info["initialized"]:
+    print("服务正常运行")
+    print(f"模型目录: {health_info['models_dir']}")
+    print(f"设备类型: {health_info['device_type']}")
+else:
+    print(f"服务未初始化: {health_info.get('error', '未知错误')}")
 ```
 
 ### Python 客户端示例
 
+#### 基础TTS请求
 ```python
 import requests
-import soundfile as sf
 
-# 发送 TTS 请求
-response = requests.post(
-    "http://localhost:8100/v1/audio/speech",
-    json={
-        "model": "voxcpm-onnx",
+# GET方式简单请求
+response = requests.get(
+    "http://localhost:8100/tts",
+    params={
         "input": "欢迎使用 VoxCPM ONNX 文本转语音服务。",
-        "voice": "default"
+        "voice": "default",
+        "response_format": "wav"
     }
 )
 
 # 保存音频文件
 with open("output.wav", "wb") as f:
     f.write(response.content)
+```
 
-# 播放音频（需要 sounddevice）
-import sounddevice as sd
-data, samplerate = sf.read("output.wav")
-sd.play(data, samplerate)
-sd.wait()
+#### 上传参考音频
+```python
+import requests
+
+# 上传参考音频
+with open("reference.wav", "rb") as f:
+    files = {"prompt_audio": f}
+    data = {
+        "feat_id": "my_custom_voice",
+        "prompt_text": "这是参考音频的文本内容"
+    }
+    response = requests.post("http://localhost:8100/ref_feat", files=files, data=data)
+
+print(response.json())
+```
+
+#### 使用自定义参考音频进行TTS
+```python
+import requests
+
+# 使用已上传的参考音频
+response = requests.post(
+    "http://localhost:8100/tts",
+    data={
+        "input": "使用自定义声音合成这段文本。",
+        "voice": "my_custom_voice",
+        "response_format": "mp3"
+    }
+)
+
+with open("custom_voice_output.mp3", "wb") as f:
+    f.write(response.content)
 ```
 
 ## 环境变量配置

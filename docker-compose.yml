@@ -18,7 +18,7 @@ services:
   #   volumes:
   #     - ./outputs:/app/outputs
   #     - ./ref_feats.db:/app/ref_feats.db
-  #     - ./models/onnx_models_quantized:/app/onnx_models
+  #     - ./models/onnx_models:/app/onnx_models
   #     - ./requirement.txt:/app/requirement.txt:ro
   #   ports:
   #     - "8100:8000"
@@ -46,7 +46,7 @@ services:
     volumes:
       - ./outputs:/app/outputs
       - ./ref_feats.db:/app/ref_feats.db
-      - ./models/onnx_models_quantized:/app/onnx_models
+      - ./models/onnx_models:/app/onnx_models
       - ./requirement-gpu.txt:/app/requirement-gpu.txt:ro
     ports:
       - "8101:8000"
